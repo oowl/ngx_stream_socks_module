@@ -68,6 +68,7 @@ static void ngx_stream_socks_read_handler(ngx_event_t *ev);
 
 static void *ngx_stream_socks_create_srv_conf(ngx_conf_t *cf);
 static char *ngx_stream_socks(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_stream_socks_user_passwd(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
 static ngx_command_t  ngx_stream_socks_commands[] = {
@@ -75,6 +76,13 @@ static ngx_command_t  ngx_stream_socks_commands[] = {
     { ngx_string("socks"),
       NGX_STREAM_SRV_CONF|NGX_CONF_NOARGS,
       ngx_stream_socks,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("socks_user_passwd"),
+      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE2,
+      ngx_stream_socks_user_passwd,
       NGX_STREAM_SRV_CONF_OFFSET,
       0,
       NULL },
@@ -397,6 +405,16 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         }
 
         ctx->dst_port = ngx_stream_socks_parse_uint16(buf+4+len);
+        out_buf[1] = 0x00;
+        out_buf[2] = 0x00;
+        out_buf[3] = ctx->atype;
+        out_buf[4] = 0x00;
+        out_buf[5] = 0x00;
+        out_buf[6] = 0x00;
+        if (ngx_send(c, out_buf, 6) != 6) {
+            ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
+            return;
+        }
         ctx->state = socks_connecting;
         break;
     default:
@@ -416,7 +434,6 @@ ngx_stream_socks_create_srv_conf(ngx_conf_t *cf)
     if (conf == NULL) {
         return NULL;
     }
-
     return conf;
 }
 
@@ -429,6 +446,20 @@ ngx_stream_socks(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     cscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_core_module);
 
     cscf->handler = ngx_stream_socks_handler;
+
+    return NGX_CONF_OK;
+}
+
+static char *
+ngx_stream_socks_user_passwd(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_stream_socks_srv_conf_t *sscf = conf;
+    ngx_str_t                           *value; 
+    
+    value = cf->args->elts;
+
+    sscf->name = value[1];
+    sscf->passwd = value[2];
 
     return NGX_CONF_OK;
 }
