@@ -275,6 +275,29 @@ ngx_stream_socks_write_handler(ngx_event_t *ev)
 }
 
 static void
+ngx_stream_socks_send_establish(ngx_stream_session_t *s)
+{
+    u_char                   out_buf[128];
+    ssize_t                  n;
+    ngx_connection_t         *c;
+    ngx_stream_socks_ctx_t   *ctx;
+
+    ctx = ngx_stream_get_module_ctx(s, ngx_stream_socks_module);
+    c = s->connection;
+
+    out_buf[1] = 0x00;
+    out_buf[2] = 0x00;
+    out_buf[3] = ctx->atype;
+    out_buf[4] = 0x00;
+    out_buf[5] = 0x00;
+    out_buf[6] = 0x00;
+    if (c->send(c, out_buf, 6) != 6) {
+        ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+    }
+    return;
+}
+
+static void
 ngx_stream_socks_read_handler(ngx_event_t *ev)
 {
     size_t                   size;
@@ -286,6 +309,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
     u_char                   *buf;
     u_char                   out_buf[128];
     ngx_sockaddr_t              dst_sockaddr;
+    ngx_int_t                   rc;
 
 
     ngx_uint_t               len;
@@ -312,7 +336,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             return;
         }
 
-        n = ngx_recv(c, ctx->buf->last, size);
+        n = c->recv(c, ctx->buf->last, size);
         if (n == NGX_ERROR || n == 0) {
             ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
             return;
@@ -370,7 +394,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         }
 
         // ensure send
-        if (ngx_send(c, out_buf, 2) != 2) {
+        if (c->send(c, out_buf, 2) != 2) {
             ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
             return;
         }
@@ -425,7 +449,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         }
 
         out_buf[1] = 0x00;
-        if (ngx_send(c, out_buf, 2) != 2) {
+        if (c->send(c, out_buf, 2) != 2) {
             ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
             return;
         }
@@ -486,16 +510,18 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         }
 
         ctx->dst_port = ngx_stream_socks_parse_uint16(buf+4+len);
-        out_buf[1] = 0x00;
-        out_buf[2] = 0x00;
-        out_buf[3] = ctx->atype;
-        out_buf[4] = 0x00;
-        out_buf[5] = 0x00;
-        out_buf[6] = 0x00;
-        if (ngx_send(c, out_buf, 6) != 6) {
-            ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
+        rc = ngx_stream_socks_proxy_connect(s);
+        if (rc == NGX_ERROR) {
+            ngx_stream_finalize_session(s, NGX_STREAM_BAD_GATEWAY);
             return;
         }
+
+        if (rc == NGX_OK) {
+            ngx_stream_socks_send_establish(s);
+        }
+
+
+
         ctx->state = socks_connecting;
         break;
     default:
@@ -1205,6 +1231,7 @@ ngx_stream_socks_proxy_connect_handler(ngx_event_t *ev)
     }
 
     ngx_stream_socks_proxy_init_upstream(s);
+    ngx_stream_socks_send_establish(s);
 }
 
 
@@ -1364,6 +1391,7 @@ ngx_stream_socks_proxy_connect(ngx_stream_session_t *s)
     pc->write->handler = ngx_stream_socks_proxy_connect_handler;
 
     ngx_add_timer(pc->write, sscf->connect_timeout);
+    return rc;
 }
 
 
