@@ -1,0 +1,19 @@
+ngx_addon_name=ngx_stream_socks_module
+ngx_feature_path="$ngx_addon_dir"
+ngx_feature_src="$ngx_addon_dir/ngx_stream_socks_module.c "
+
+if [ "$ngx_module_link" = DYNAMIC ]; then
+
+  #first module name as main module name.
+  ngx_module_name="ngx_stream_socks_module"
+  ngx_module_incs="$ngx_feature_path"
+  ngx_module_srcs="$ngx_feature_src"
+  ngx_module_deps="$ngx_feature_deps"
+  ngx_module_libs=
+
+  . auto/module
+else
+  STREAM_MODULES="$STREAM_MODULES ngx_stream_socks_module"
+  CORE_INCS="$CORE_INCS $ngx_feature_path"
+  NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_feature_src"
+fi
