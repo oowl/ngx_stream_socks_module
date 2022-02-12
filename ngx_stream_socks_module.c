@@ -113,6 +113,7 @@ static ngx_int_t ngx_stream_variable_socks_passwd_variable(ngx_stream_session_t 
 
 
 static void *ngx_stream_socks_create_srv_conf(ngx_conf_t *cf);
+static char *ngx_stream_socks_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 static char *ngx_stream_socks(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_stream_socks_user_passwd(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_stream_socks_proxy_bind(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -150,63 +151,63 @@ static ngx_command_t  ngx_stream_socks_commands[] = {
       NULL },
 
     { ngx_string("socks_proxy_bind"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE12,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE12,
       ngx_stream_socks_proxy_bind,
       NGX_STREAM_SRV_CONF_OFFSET,
       0,
       NULL },
 
     { ngx_string("socks_proxy_socket_keepalive"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, socket_keepalive),
       NULL },
 
     { ngx_string("socks_proxy_buffer_size"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, buffer_size),
       NULL },
       
     { ngx_string("socks_proxy_connect_timeout"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_msec_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, connect_timeout),
       NULL },
 
     { ngx_string("socks_proxy_timeout"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_msec_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, timeout),
       NULL },
 
     { ngx_string("socks_proxy_upload_rate"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
       ngx_stream_set_complex_value_size_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, upload_rate),
       NULL },
 
     { ngx_string("socks_proxy_download_rate"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
       ngx_stream_set_complex_value_size_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, download_rate),
       NULL },
 
     { ngx_string("socks_proxy_requests"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, requests),
       NULL },
 
     { ngx_string("socks_proxy_responses"),
-      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_socks_srv_conf_t, responses),
@@ -217,21 +218,21 @@ static ngx_command_t  ngx_stream_socks_commands[] = {
 
 
 static ngx_stream_module_t  ngx_stream_socks_module_ctx = {
-    ngx_stream_socks_preconfiguration,             /* preconfiguration */
-    ngx_stream_socks_postconfiguration,            /* postconfiguration */
+    ngx_stream_socks_preconfiguration,     /* preconfiguration */
+    ngx_stream_socks_postconfiguration,    /* postconfiguration */
 
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
 
-    ngx_stream_socks_create_srv_conf,     /* create server configuration */
-    NULL                                   /* merge server configuration */
+    ngx_stream_socks_create_srv_conf,      /* create server configuration */
+    ngx_stream_socks_merge_srv_conf        /* merge server configuration */
 };
 
 
 ngx_module_t  ngx_stream_socks_module = {
     NGX_MODULE_V1,
-    &ngx_stream_socks_module_ctx,         /* module context */
-    ngx_stream_socks_commands,            /* module directives */
+    &ngx_stream_socks_module_ctx,          /* module context */
+    ngx_stream_socks_commands,             /* module directives */
     NGX_STREAM_MODULE,                     /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
@@ -440,7 +441,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             break;
         }
         buf = ctx->buf->pos;
-        if (buf[0] != NGX_STREAM_SOCKS_VERSION && buf[1] == 0) {
+        if (buf[0] != NGX_STREAM_SOCKS_VERSION || buf[1] == 0) {
             ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
             return;
         }
@@ -474,7 +475,17 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             break;
         }
 
-        // if (sscf->name)
+        if (sscf->auth_name_keys->keys.nelts > 0) {
+            out_buf[1] = NGX_STREAM_SOCKS_AUTH_NO_METHODS;
+            ctx->auth = NGX_STREAM_SOCKS_AUTH_NO_METHODS;
+            ctx->state = socks_auth;
+            // ensure send
+            if (c->send(c, out_buf, 2) != 2) {
+                ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
+                return;
+            }
+            break;
+        }
 
         for (i = 0; i < len; i++) {
             if (buf[2+i] == NGX_STREAM_SOCKS_AUTH_NO_AUTHENTICATION) {
@@ -495,7 +506,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             break;
         }
         buf = ctx->buf->pos;
-        if (buf[0] != NGX_STREAM_SOCKS_VERSION && buf[1] == 0) {
+        if (buf[1] == 0) {
             ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
             return;
         }
@@ -528,6 +539,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             ctx->buf->pos = ctx->buf->last = ctx->buf->start;
         }
 
+        out_buf[0] = 0x01;
         hash = ngx_hash_key(ctx->name.data, ctx->name.len);
         temp = ngx_hash_find(&sscf->auth_name_hash, hash, ctx->name.data, ctx->name.len);
         if (temp == NULL) {
@@ -1526,15 +1538,58 @@ ngx_stream_socks_create_srv_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-
     conf->local = NULL;
     conf->socket_keepalive = 0;
     conf->buffer_size = 16384;
     conf->connect_timeout = 60000;
     conf->timeout = 60000 * 10;
+
+    conf->local = NGX_CONF_UNSET_PTR;
+    conf->socket_keepalive = NGX_CONF_UNSET_MSEC;
+    conf->buffer_size = NGX_CONF_UNSET_SIZE;
+    conf->connect_timeout = NGX_CONF_UNSET_MSEC;
+    conf->timeout = NGX_CONF_UNSET_MSEC;
+    conf->requests = NGX_CONF_UNSET_UINT;
+    conf->responses = NGX_CONF_UNSET_UINT;
+
     return conf;
 }
 
+static char *
+ngx_stream_socks_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+{
+    ngx_stream_socks_srv_conf_t *prev = parent;
+    ngx_stream_socks_srv_conf_t *conf = child;
+
+    ngx_conf_merge_ptr_value(conf->local, prev->local, NULL);
+    
+    ngx_conf_merge_value(conf->socket_keepalive,
+                              prev->socket_keepalive, 0);
+
+    ngx_conf_merge_size_value(conf->buffer_size,
+                              prev->buffer_size, 16384);
+
+    ngx_conf_merge_msec_value(conf->connect_timeout,
+                              prev->connect_timeout, 60000);
+
+    ngx_conf_merge_msec_value(conf->timeout,
+                              prev->timeout, 10 * 60000);
+
+    if (conf->upload_rate == NULL) {
+        conf->upload_rate = prev->upload_rate;
+    }
+
+    if (conf->download_rate == NULL) {
+        conf->download_rate = prev->download_rate;
+    }
+
+    ngx_conf_merge_uint_value(conf->requests,
+                              prev->requests, 0);
+
+    ngx_conf_merge_uint_value(conf->responses,
+                              prev->responses, NGX_MAX_INT32_VALUE);
+    return NGX_CONF_OK;
+}
 
 static char *
 ngx_stream_socks(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
@@ -1712,6 +1767,5 @@ ngx_stream_socks_postconfiguration(ngx_conf_t* cf)
         return NGX_ERROR;
     }
 
-    sscf->auth_name_keys = NULL;
     return NGX_OK;
 }
