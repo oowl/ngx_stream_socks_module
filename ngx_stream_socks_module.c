@@ -251,8 +251,9 @@ ngx_stream_socks_handler(ngx_stream_session_t *s)
     }
 
     ngx_stream_set_ctx(s, ctx, ngx_stream_socks_module);
-
     c->read->handler = ngx_stream_socks_read_handler;
+
+    ngx_stream_socks_read_handler(c->read);
 
     return;
 }
@@ -262,19 +263,19 @@ ngx_stream_socks_send_establish(ngx_stream_session_t *s, ngx_uint_t rep)
 {
     u_char                   out_buf[128];
     ngx_connection_t         *c;
-    ngx_stream_socks_ctx_t   *ctx;
-
-    ctx = ngx_stream_get_module_ctx(s, ngx_stream_socks_module);
     c = s->connection;
 
     out_buf[0] = NGX_STREAM_SOCKS_VERSION;
     out_buf[1] = rep;
     out_buf[2] = 0x00;
-    out_buf[3] = ctx->atype;
+    out_buf[3] = NGX_STREAM_SOCKS_ATYPE_IPV4;
     out_buf[4] = 0x00;
     out_buf[5] = 0x00;
     out_buf[6] = 0x00;
-    if (c->send(c, out_buf, 7) != 7) {
+    out_buf[7] = 0x00;
+    out_buf[8] = 0x00;
+    out_buf[9] = 0x00;
+    if (c->send(c, out_buf, 10) != 10) {
         ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
     }
     return;
@@ -295,7 +296,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
 
     c = ev->data;
     s = c->data;
-
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "read handler");
     if (ev->timedout) {
         ngx_connection_error(c, NGX_ETIMEDOUT, "connection timed out");
         ngx_stream_finalize_session(s, NGX_STREAM_OK);
@@ -306,7 +307,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
 
     sscf = ngx_stream_get_module_srv_conf(s, ngx_stream_socks_module);
 
-    if (ctx->state <= socks_connect && ctx->buf) {
+    if (ctx->state <= socks_connect && ctx->buf && c->buffer == NULL) {
         size = ctx->buf->end - ctx->buf->last;
 
         if (size == 0) {
@@ -315,17 +316,29 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             return;
         }
 
+
         n = c->recv(c, ctx->buf->last, size);
         if (n == NGX_ERROR || n == 0) {
             ngx_stream_finalize_session(s, NGX_STREAM_BAD_REQUEST);
             return;
         }
-
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "read return %d", n);
         if (n == NGX_AGAIN) {
+            if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+                ngx_stream_finalize_session(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
+                return;
+            }
             return;
         }
 
         ctx->buf->last += n;
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "read buffer size %d %d %d", ctx->buf->last - ctx->buf->pos, n, size);
+    }
+
+    if (c->buffer) {
+        ctx->buf->last = ngx_copy(ctx->buf->pos, c->buffer->pos, c->buffer->last - c->buffer->pos);
+        c->buffer = NULL;
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "read c->buffer size %d", ctx->buf->last - ctx->buf->pos);
     }
 
     if (ctx->buf->last - ctx->buf->pos == 0) {
@@ -340,7 +353,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
     {
     case sock_preauth:
         if (size < 2) {
-            return;
+            break;
         }
         buf = ctx->buf->pos;
         if (buf[0] != NGX_STREAM_SOCKS_VERSION && buf[1] == 0) {
@@ -350,7 +363,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         // method count
         len = buf[1];
         if (size < 2 + len) {
-            return;
+            break;
         }
 
         ngx_memcpy(ctx->buf->pos, ctx->buf->pos + 2 + len, size - len -2);
@@ -381,7 +394,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
 
     case socks_auth:
         if (size < 2) {
-            return;
+            break;
         }
         buf = ctx->buf->pos;
         if (buf[0] != NGX_STREAM_SOCKS_VERSION && buf[1] == 0) {
@@ -391,11 +404,11 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         // method count
         len = buf[1];
         if (size < 2 + len + 1) {
-            return;
+            break;
         }
 
         if (size < 2 + len + 1 + buf[2+len]) {
-            return;
+            break;
         }
 
         ctx->name.data = ngx_pcalloc(c->pool, len);
@@ -438,7 +451,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
     
     case socks_connect:
         if (size < 6) {
-            return;
+            break;
         }
         buf = ctx->buf->pos;
         if (buf[0] != NGX_STREAM_SOCKS_VERSION) {
@@ -460,7 +473,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         case NGX_STREAM_SOCKS_ATYPE_IPV4:
             len = 4;
             if (size < 5 + len) {
-                return;
+                break;
             }
             dst_sockaddr.sockaddr_in.sin_family = AF_INET;
             dst_sockaddr.sockaddr_in.sin_port = 0;
@@ -472,7 +485,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         case NGX_STREAM_SOCKS_ATYPE_HOST:
             len = buf[4] + 1;
             if (size < 5 + len) {
-                return;
+                break;
             }
             ctx->dst_addr.data = ngx_pcalloc(c->pool, len - 1);
             ctx->dst_addr.len = len - 1;
@@ -481,7 +494,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         case NGX_STREAM_SOCKS_ATYPE_IPV6:
             len = 16;
             if (size < 5 + len) {
-                return;
+                break;
             }
             dst_sockaddr.sockaddr_in6.sin6_family = AF_INET6;
             dst_sockaddr.sockaddr_in6.sin6_port = 0;
@@ -508,6 +521,10 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         break;
     }
 
+    if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+        ngx_stream_finalize_session(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
+        return;
+    }
     return;
 }
 
@@ -1292,14 +1309,15 @@ ngx_stream_socks_proxy_connect(ngx_stream_session_t *s)
 
     ngx_memzero(&url, sizeof(ngx_url_t));
 
-    host = ngx_pcalloc(c->pool, ctx->dst_addr.len + 7);
+    host = ngx_pcalloc(c->pool, sizeof(ngx_str_t));
     if (host == NULL) {
         ngx_stream_socks_send_establish(s, NGX_STREAM_SOCKS_REPLY_REP_SERVER_FAILURE);
         return NGX_ERROR;
     }
+    host->data = ngx_pcalloc(c->pool, ctx->dst_addr.len + 7);
     ngx_memcpy(host->data, ctx->dst_addr.data, ctx->dst_addr.len);
     ngx_sprintf(host->data+ctx->dst_addr.len, ":%d", ctx->dst_port);
-    host->len = ngx_strlen(host->data) - 1;
+    host->len = ngx_strlen(host->data);
     
     url.url = *host;
 
@@ -1392,7 +1410,7 @@ ngx_stream_socks_create_srv_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-    conf->local = NGX_CONF_UNSET_PTR;
+    conf->local = NULL;
     conf->socket_keepalive = 0;
     conf->buffer_size = 16384;
     conf->connect_timeout = 60000;
