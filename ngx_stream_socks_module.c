@@ -1816,11 +1816,24 @@ ngx_stream_socks_user_passwd(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_int_t                     rc;
     ngx_stream_socks_srv_conf_t *sscf = conf;
-    ngx_str_t                           *value; 
-    
+    ngx_str_t                           *value;
+    ngx_str_t                           *passwd;
+
     value = cf->args->elts;
 
-    rc = ngx_hash_add_key(sscf->auth_name_keys, &value[1], &value[2], 0);
+    passwd = ngx_pcalloc(cf->pool, sizeof(ngx_str_t));
+    if (passwd == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    passwd->data = ngx_pcalloc(cf->pool, value[2].len);
+    if (passwd->data == NULL) {
+        return NGX_CONF_ERROR;
+    }    
+
+    passwd->len = value[2].len;
+    ngx_memcpy(passwd->data, value[2].data, passwd->len);
+
+    rc = ngx_hash_add_key(sscf->auth_name_keys, &value[1], passwd, 0);
 
     if (rc == NGX_ERROR) {
         return NGX_CONF_ERROR;
