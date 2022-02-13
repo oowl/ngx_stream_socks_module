@@ -97,6 +97,7 @@ socks auth password in current connection
 ## Usage
 ```
 stream {
+    resolver 8.8.8.8;
     log_format socks 'socks: $socks_connect_addr $socks_name $socks_passwd';
     server {         
         listen     0.0.0.0:22345;
