@@ -2,11 +2,14 @@
 ## Description
 Socks5 proxy server based on nginx stream module implementation.
 
+
+But this module now only support tcp proxy.
 ## Installation
 
-``` 
+```
+$ cd nginx 
 $ ./configure --add-module=/path/ngx_stream_dns_proxy_module --with-stream
-
+$ make && make install
 ```
 
 ## Configuration directives
