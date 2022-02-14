@@ -8,7 +8,7 @@ But this module now only support tcp proxy.
 
 ```
 $ cd nginx 
-$ ./configure --add-module=/path/ngx_stream_dns_proxy_module --with-stream
+$ ./configure --add-module=/path/ngx_stream_socks_module --with-stream
 $ make && make install
 ```
 
