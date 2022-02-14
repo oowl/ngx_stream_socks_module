@@ -457,6 +457,9 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
 
         for (i = 0; i < len; i++) {
             if (buf[2+i] == NGX_STREAM_SOCKS_AUTH_USER_PASSWORD) {
+                if (sscf->auth_name_keys->keys.nelts == 0) {
+                    break;
+                }
                 out_buf[1] = NGX_STREAM_SOCKS_AUTH_USER_PASSWORD;
                 ctx->auth = NGX_STREAM_SOCKS_AUTH_USER_PASSWORD;
                 ctx->state = socks_auth;
