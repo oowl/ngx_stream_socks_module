@@ -34,11 +34,14 @@
 #define NGX_STREAM_SOCKS_REPLY_REP_COMMAND_NOT_SUPPORTED        0x07
 #define NGX_STREAM_SOCKS_REPLY_REP_ADDRESS_TYPE_NOT_SUPPORTED   0x08
 #define NGX_STREAM_SOCKS_REPLY_REP_UNASSIGNED                   0x09
+#define NGX_STREAM_SOCKS_REPLY_REP_AUTH_REQUIRE                 0x0a
 
-#define NGX_STREAM_SOCKS_BUFFER_SIZE            128
+#define NGX_STREAM_SOCKS_BUFFER_SIZE            1280
 
 #define ngx_stream_socks_parse_uint16(p)  ((p)[0] << 8 | (p)[1])
 
+#define ngx_stream_socks_https_proxy_response  "HTTP/1.0 200 Connection established\r\n\r\n"
+#define ngx_stream_socks_https_proxy_auth_response "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Test Basic Auth\"\r\n\r\n\r\n"
 typedef struct {
     ngx_addr_t                      *addr;
     ngx_stream_complex_value_t      *value;
@@ -59,6 +62,7 @@ typedef struct {
     ngx_uint_t                       responses;
     ngx_hash_keys_arrays_t              *auth_name_keys;
     ngx_hash_t                          auth_name_hash;
+    ngx_array_t                         *auth_name_array;
 } ngx_stream_socks_srv_conf_t;
 
 
@@ -68,7 +72,8 @@ typedef struct {
         socks_auth,
         socks_connect,
         socks_connecting,
-        socks_done
+        socks_done,
+        socks_http_proxy
     } state;
     ngx_uint_t  auth;
     ngx_str_t   name;
@@ -81,6 +86,12 @@ typedef struct {
     ngx_chain_t *out;
 } ngx_stream_socks_ctx_t;
 
+
+typedef struct {
+    ngx_str_t   name;
+    ngx_str_t   passwd;
+    ngx_str_t   base64;
+} ngx_stream_socks_password_t;
 
 static void ngx_stream_socks_handler(ngx_stream_session_t *s);
 
@@ -348,6 +359,29 @@ ngx_stream_socks_send_establish(ngx_stream_session_t *s, ngx_uint_t rep)
     u_char                   out_buf[128];
     ngx_connection_t         *c;
     c = s->connection;
+    ngx_stream_socks_ctx_t   *ctx;
+    size_t                    len;
+
+    ctx = ngx_stream_get_module_ctx(s, ngx_stream_socks_module);
+    if (ctx->state == socks_http_proxy) {
+        if (rep == NGX_STREAM_SOCKS_REPLY_REP_SUCCEED) {
+            len = ngx_sprintf(out_buf, ngx_stream_socks_https_proxy_response) - out_buf;
+            if (c->send(c, out_buf, len) != (ssize_t) len) {
+                ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+            }
+        }  else {
+            ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+        }
+        return;
+    }
+
+    if (rep == NGX_STREAM_SOCKS_REPLY_REP_AUTH_REQUIRE) {
+        len = ngx_sprintf(out_buf, ngx_stream_socks_https_proxy_auth_response) - out_buf;
+        if (c->send(c, out_buf, len) != (ssize_t) len) {
+            ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+        }
+    }
+
 
     out_buf[0] = NGX_STREAM_SOCKS_VERSION;
     out_buf[1] = rep;
@@ -377,7 +411,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
     u_char                   *buf;
     u_char                   out_buf[128];
     ngx_sockaddr_t              dst_sockaddr;
-    ngx_str_t                *temp;
+    ngx_stream_socks_password_t *temp;
     ngx_uint_t                  hash;
 
 
@@ -437,6 +471,9 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
 
     out_buf[0] = NGX_STREAM_SOCKS_VERSION;
 
+    len = 0;
+    int host_len = 0;
+
     switch (ctx->state)
     {
     case sock_preauth:
@@ -444,6 +481,110 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             break;
         }
         buf = ctx->buf->pos;
+        if (size > 8 && buf[0] == 'C' && buf[1] == 'O' && buf[2] == 'N' && buf[3] == 'N'
+            && buf[4] == 'E' && buf[5] == 'C' && buf[6] == 'T') {
+            ngx_int_t parse_done = 0;
+            for (size_t index = 8; index <= size; index++) {
+                if (buf[index] == ':' && host_len == 0) {
+                    host_len = index - 8;
+                }
+
+                if (buf[index] == ' ' && len == 0) {
+                    len = index - 8;
+                }
+
+                if (index + 3 < size && buf[index] == '\r' && buf[index+1] == '\n'
+                    && buf[index+2] == '\r' && buf[index+3] == '\n') {
+                        parse_done = 1;
+                        buf[index+4] = '\0';
+                }
+
+            }
+
+            ngx_int_t  proxy_index = 0;
+            size_t  proxy_len = 0;
+            ngx_int_t  proxy_auth_require = 1;
+            proxy_index = (u_char *) ngx_strstr(buf, "Proxy-Authorization: Basic ") - buf;
+            if (proxy_index > 0) {
+                for (size_t i = proxy_index + 27; i < size - 2; i++) {
+                    if (buf[i] == '\r' && buf[i+1] == '\n') {
+                        proxy_len = i - proxy_index - 27;
+                        break;
+                    }
+                }
+
+                temp = sscf->auth_name_array->elts;
+                for (size_t i = 0; i < sscf->auth_name_array->nelts; i++) {
+                    ngx_log_debug4(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+                        "name: %V password: %V base64: %V proxy_len= %d",&temp[i].name, &temp[i].passwd, &temp[i].base64, proxy_len);
+
+                    if (temp->base64.len == proxy_len && ngx_strncmp(temp[i].base64.data, buf+proxy_index+27, proxy_len) == 0) {
+                        ctx->name.data = ngx_pcalloc(c->pool, temp[i].name.len);
+                        ctx->passwd.data = ngx_pcalloc(c->pool, temp[i].passwd.len);
+                        if (ctx->name.data == NULL || ctx->passwd.data == NULL) {
+                            ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+                            return;
+                        }
+                        ctx->name.len = temp[i].name.len;
+                        ctx->passwd.len = temp[i].passwd.len;
+                        ngx_memcpy(ctx->name.data, temp[i].name.data, ctx->name.len);
+                        ngx_memcpy(ctx->passwd.data, temp[i].passwd.data, ctx->passwd.len);
+                        proxy_auth_require = 0;
+                    }
+                }
+
+                if (sscf->auth_name_array->nelts == 0) {
+                    proxy_auth_require = 0;
+                }
+
+            }
+
+            if (!parse_done) {
+                break;
+            }
+
+            // ngx_log_debug7(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+            //     "socks receive buffer: %s len: %d host_len= %d auth_require=%d proxy: %s name: %V password: %V", buf, len, host_len, proxy_auth_require, buf+proxy_index+27, &ctx->name, &ctx->passwd);
+
+            if (proxy_auth_require) {
+                ngx_stream_socks_send_establish(s, NGX_STREAM_SOCKS_REPLY_REP_AUTH_REQUIRE);
+                ctx->buf->last = ctx->buf->pos;
+                return;
+            }
+
+            ngx_log_debug3(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+                "socks receive buffer: %s len: %d host_len= %d", buf, len, host_len);
+            if (len == 0 || host_len == 0) {
+                ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+                return;
+            }
+
+            ctx->dst_addr.data = ngx_pcalloc(c->pool, host_len);
+            ctx->dst_addr.len = host_len;
+            ngx_memcpy(ctx->dst_addr.data, buf+8, host_len);
+            ngx_int_t port;
+            port = ngx_atoi(buf+8+host_len+1, len - host_len - 1);
+
+            if (port == NGX_ERROR) {
+                ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+                return;
+            }
+            ctx->dst_port = port;
+            ngx_log_debug2(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+                "socks receive https proxy connect addr: %V port: %d", &ctx->dst_addr, ctx->dst_port);
+            ctx->state = socks_http_proxy;
+            // ensure send
+
+
+            if (ngx_stream_socks_proxy_connect(s) != NGX_OK) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+                        "proxy connect");
+                ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_GATEWAY);
+                return;
+            }
+            return;
+        }
+
         if (buf[0] != NGX_STREAM_SOCKS_VERSION || buf[1] == 0) {
             ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
             return;
@@ -550,7 +691,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         temp = ngx_hash_find(&sscf->auth_name_hash, hash, ctx->name.data, ctx->name.len);
         if (temp == NULL) {
             out_buf[1] = 0x01;
-        } else if (temp->len == ctx->passwd.len && ngx_strncmp(temp->data, ctx->passwd.data, temp->len) == 0) {
+        } else if (temp->passwd.len == ctx->passwd.len && ngx_strncmp(temp->passwd.data, ctx->passwd.data, temp->passwd.len) == 0) {
             out_buf[1] = 0x00;
         } else {
             out_buf[1] = 0x01;
@@ -1760,6 +1901,11 @@ ngx_stream_socks_create_srv_conf(ngx_conf_t *cf)
     conf->auth_name_keys->pool = cf->pool;
     conf->auth_name_keys->temp_pool = cf->pool;
 
+    conf->auth_name_array = ngx_array_create(cf->pool, 4, sizeof(ngx_stream_socks_password_t));
+    if (conf->auth_name_array == NULL) {
+        return NULL;
+    }
+
     if (ngx_hash_keys_array_init(conf->auth_name_keys, NGX_HASH_SMALL)
         != NGX_OK)
     {
@@ -1837,21 +1983,49 @@ ngx_stream_socks_user_passwd(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_int_t                     rc;
     ngx_stream_socks_srv_conf_t *sscf = conf;
     ngx_str_t                           *value;
-    ngx_str_t                           *passwd;
+    ngx_stream_socks_password_t         *passwd;
+    ngx_stream_socks_password_t         *tmp_passwd;
+    u_char                               buf[256];
+    ngx_str_t                            tmp_str;
 
     value = cf->args->elts;
 
-    passwd = ngx_pcalloc(cf->pool, sizeof(ngx_str_t));
+    passwd = ngx_pcalloc(cf->pool, sizeof(ngx_stream_socks_password_t));
     if (passwd == NULL) {
         return NGX_CONF_ERROR;
     }
-    passwd->data = ngx_pcalloc(cf->pool, value[2].len);
-    if (passwd->data == NULL) {
+    passwd->passwd.data = ngx_pcalloc(cf->pool, value[2].len);
+    if (passwd->passwd.data == NULL) {
         return NGX_CONF_ERROR;
     }    
 
-    passwd->len = value[2].len;
-    ngx_memcpy(passwd->data, value[2].data, passwd->len);
+    passwd->passwd.len = value[2].len;
+    ngx_memcpy(passwd->passwd.data, value[2].data, passwd->passwd.len);
+
+    passwd->name.data = ngx_pcalloc(cf->pool, value[1].len);
+    if (passwd->name.data == NULL) {
+        return NGX_CONF_ERROR;
+    }    
+
+    passwd->name.len = value[1].len;
+    ngx_memcpy(passwd->name.data, value[1].data, passwd->name.len);
+
+    passwd->base64.len = ngx_base64_encoded_length(value[2].len + value[1].len + 1);
+    passwd->base64.data = ngx_palloc(cf->pool, passwd->base64.len);
+    if (passwd->base64.data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    if (value[2].len + value[1].len + 1 > 128) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                    "user and name too long");
+    }
+
+    ngx_snprintf(buf, 128, "%V:%V", &value[1], &value[2]);
+    tmp_str.data = buf;
+    tmp_str.len = value[2].len + value[1].len + 1;
+
+    ngx_encode_base64(&passwd->base64, &tmp_str);
 
     rc = ngx_hash_add_key(sscf->auth_name_keys, &value[1], passwd, 0);
 
@@ -1864,6 +2038,13 @@ ngx_stream_socks_user_passwd(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                            "conflicting variable name \"%V\"", &value[1]);
         return NGX_CONF_ERROR;
     }
+
+    tmp_passwd = ngx_array_push(sscf->auth_name_array);
+    if (tmp_passwd == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    ngx_memcpy(tmp_passwd, passwd, sizeof(ngx_stream_socks_password_t));
 
     return NGX_CONF_OK;
 }
