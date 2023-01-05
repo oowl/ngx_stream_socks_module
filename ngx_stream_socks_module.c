@@ -24,6 +24,9 @@
 #define NGX_STREAM_SOCKS_ATYPE_HOST             0x03
 #define NGX_STREAM_SOCKS_ATYPE_IPV6             0x04
 
+#define NGX_STREAM_SOCKS_PROTOCOL_SOCKS5             0x01
+#define NGX_STREAM_SOCKS_PROTOCOL_HTTP               0x02
+
 #define NGX_STREAM_SOCKS_REPLY_REP_SUCCEED                      0x00
 #define NGX_STREAM_SOCKS_REPLY_REP_SERVER_FAILURE               0x01
 #define NGX_STREAM_SOCKS_REPLY_REP_NOT_ALLOWED                  0x02
@@ -78,6 +81,7 @@ typedef struct {
     ngx_uint_t  auth;
     ngx_str_t   name;
     ngx_str_t   passwd;
+    ngx_uint_t  protocol;
     ngx_buf_t   *buf;
     ngx_uint_t  cmd;
     ngx_uint_t  atype;
@@ -122,6 +126,8 @@ static ngx_int_t ngx_stream_variable_socks_name_variable(ngx_stream_session_t *s
     ngx_stream_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_stream_variable_socks_passwd_variable(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_stream_variable_socks_protocol_variable(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, uintptr_t data);
 
 
 static void *ngx_stream_socks_create_srv_conf(ngx_conf_t *cf);
@@ -142,7 +148,10 @@ static ngx_stream_variable_t  ngx_stream_socks_variables[] = {
       ngx_stream_variable_socks_name_variable, 0, 0, 0 },
 
     { ngx_string("socks_passwd"), NULL,
-      ngx_stream_variable_socks_passwd_variable, 0, 0, 0 }
+      ngx_stream_variable_socks_passwd_variable, 0, 0, 0 },
+
+    { ngx_string("socks_protocol"), NULL,
+      ngx_stream_variable_socks_protocol_variable, 0, 0, 0 }
 
 };
 
@@ -289,6 +298,46 @@ ngx_stream_variable_socks_passwd_variable(ngx_stream_session_t *s,
 
     v->len = ctx->passwd.len;
     v->data = ctx->passwd.data;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_stream_variable_socks_protocol_variable(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, uintptr_t data)
+{
+    ngx_stream_socks_ctx_t  *ctx;
+
+    ctx = ngx_stream_get_module_ctx(s, ngx_stream_socks_module);
+    if (ctx == NULL) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    if (ctx->protocol == NGX_STREAM_SOCKS_PROTOCOL_SOCKS5) {
+        v->data = ngx_pcalloc(s->connection->pool, ngx_strlen("SOCKS5"));
+        if (v->data == NULL) {
+            return NGX_ERROR;
+        }
+
+        v->len = ngx_sprintf(v->data, "SOCKS5") - v->data;
+
+    } else if (ctx->protocol == NGX_STREAM_SOCKS_PROTOCOL_HTTP) {
+        v->data = ngx_pcalloc(s->connection->pool, ngx_strlen("HTTP"));
+        if (v->data == NULL) {
+            return NGX_ERROR;
+        }
+
+        v->len = ngx_sprintf(v->data, "HTTP") - v->data;
+    } else {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+    
+
     v->valid = 1;
     v->no_cacheable = 0;
     v->not_found = 0;
@@ -546,6 +595,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             // ngx_log_debug7(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
             //     "socks receive buffer: %s len: %d host_len= %d auth_require=%d proxy: %s name: %V password: %V", buf, len, host_len, proxy_auth_require, buf+proxy_index+27, &ctx->name, &ctx->passwd);
 
+            ctx->protocol = NGX_STREAM_SOCKS_PROTOCOL_HTTP;
             if (proxy_auth_require) {
                 ngx_stream_socks_send_establish(s, NGX_STREAM_SOCKS_REPLY_REP_AUTH_REQUIRE);
                 ctx->buf->last = ctx->buf->pos;
@@ -652,6 +702,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         if (size < 2) {
             break;
         }
+        ctx->protocol = NGX_STREAM_SOCKS_PROTOCOL_SOCKS5;
         buf = ctx->buf->pos;
         if (buf[1] == 0) {
             ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
