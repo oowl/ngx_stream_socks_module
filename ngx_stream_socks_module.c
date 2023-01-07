@@ -25,7 +25,8 @@
 #define NGX_STREAM_SOCKS_ATYPE_IPV6             0x04
 
 #define NGX_STREAM_SOCKS_PROTOCOL_SOCKS5             0x01
-#define NGX_STREAM_SOCKS_PROTOCOL_HTTP               0x02
+#define NGX_STREAM_SOCKS_PROTOCOL_HTTPS              0x02
+#define NGX_STREAM_SOCKS_PROTOCOL_HTTP               0x03
 
 #define NGX_STREAM_SOCKS_REPLY_REP_SUCCEED                      0x00
 #define NGX_STREAM_SOCKS_REPLY_REP_SERVER_FAILURE               0x01
@@ -325,6 +326,13 @@ ngx_stream_variable_socks_protocol_variable(ngx_stream_session_t *s,
 
         v->len = ngx_sprintf(v->data, "SOCKS5") - v->data;
 
+    } else if (ctx->protocol == NGX_STREAM_SOCKS_PROTOCOL_HTTPS) {
+        v->data = ngx_pcalloc(s->connection->pool, ngx_strlen("HTTPS"));
+        if (v->data == NULL) {
+            return NGX_ERROR;
+        }
+
+        v->len = ngx_sprintf(v->data, "HTTPS") - v->data;
     } else if (ctx->protocol == NGX_STREAM_SOCKS_PROTOCOL_HTTP) {
         v->data = ngx_pcalloc(s->connection->pool, ngx_strlen("HTTP"));
         if (v->data == NULL) {
@@ -595,7 +603,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             // ngx_log_debug7(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
             //     "socks receive buffer: %s len: %d host_len= %d auth_require=%d proxy: %s name: %V password: %V", buf, len, host_len, proxy_auth_require, buf+proxy_index+27, &ctx->name, &ctx->passwd);
 
-            ctx->protocol = NGX_STREAM_SOCKS_PROTOCOL_HTTP;
+            ctx->protocol = NGX_STREAM_SOCKS_PROTOCOL_HTTPS;
             if (proxy_auth_require) {
                 ngx_stream_socks_send_establish(s, NGX_STREAM_SOCKS_REPLY_REP_AUTH_REQUIRE);
                 ctx->buf->last = ctx->buf->pos;
@@ -641,6 +649,18 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
         }
         // method count
         len = buf[1];
+
+        // if (len == 0xff) {
+        //     out_buf[1] = NGX_STREAM_SOCKS_AUTH_USER_PASSWORD;
+        //     ctx->auth = NGX_STREAM_SOCKS_AUTH_USER_PASSWORD;
+        //     ctx->state = socks_auth;
+        //     // ensure send
+        //     if (c->send(c, out_buf, 2) != 2) {
+        //         ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
+        //         return;
+        //     }
+        // }
+
         if (size < 2 + len) {
             break;
         }
