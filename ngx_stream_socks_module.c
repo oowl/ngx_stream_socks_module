@@ -420,7 +420,7 @@ ngx_stream_socks_send_establish(ngx_stream_session_t *s, ngx_uint_t rep)
     size_t                    len;
 
     ctx = ngx_stream_get_module_ctx(s, ngx_stream_socks_module);
-    if (ctx->state == socks_http_proxy) {
+    if (ctx->state == socks_http_proxy && ctx->protocol == NGX_STREAM_SOCKS_PROTOCOL_HTTPS) {
         if (rep == NGX_STREAM_SOCKS_REPLY_REP_SUCCEED) {
             len = ngx_sprintf(out_buf, ngx_stream_socks_https_proxy_response) - out_buf;
             if (c->send(c, out_buf, len) != (ssize_t) len) {
@@ -429,6 +429,10 @@ ngx_stream_socks_send_establish(ngx_stream_session_t *s, ngx_uint_t rep)
         }  else {
             ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
         }
+        return;
+    }
+
+    if (ctx->state == socks_http_proxy && ctx->protocol == NGX_STREAM_SOCKS_PROTOCOL_HTTP) {
         return;
     }
 
@@ -538,16 +542,30 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             break;
         }
         buf = ctx->buf->pos;
-        if (size > 8 && buf[0] == 'C' && buf[1] == 'O' && buf[2] == 'N' && buf[3] == 'N'
-            && buf[4] == 'E' && buf[5] == 'C' && buf[6] == 'T') {
+        if (buf[0] != NGX_STREAM_SOCKS_VERSION && size > 20) {
             ngx_int_t parse_done = 0;
-            for (size_t index = 8; index <= size; index++) {
+            ngx_int_t parse_start = 0;
+            for (size_t index = 0; index <= size; index++) {
+                if (buf[index] == ' ' && parse_start == 0) {
+                    if (buf[index+1] == 'h' && buf[index+2] == 't' && buf[index+3] == 't') {
+                        parse_start = index + 8;
+                        index = index + 7;
+                    } else {
+                        parse_start = index + 1;
+                    }
+                    continue;
+                }
+
                 if (buf[index] == ':' && host_len == 0) {
-                    host_len = index - 8;
+                    host_len = index - parse_start;
+                }
+
+                if (buf[index] == '/' && host_len == 0) {
+                    host_len = index - parse_start;
                 }
 
                 if (buf[index] == ' ' && len == 0) {
-                    len = index - 8;
+                    len = index - parse_start;
                 }
 
                 if (index + 3 < size && buf[index] == '\r' && buf[index+1] == '\n'
@@ -600,10 +618,13 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
                 break;
             }
 
-            // ngx_log_debug7(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
-            //     "socks receive buffer: %s len: %d host_len= %d auth_require=%d proxy: %s name: %V password: %V", buf, len, host_len, proxy_auth_require, buf+proxy_index+27, &ctx->name, &ctx->passwd);
+            if (buf[0] == 'C' && buf[1] == 'O' && buf[2] == 'N' && buf[3] == 'N'
+            && buf[4] == 'E' && buf[5] == 'C' && buf[6] == 'T') {
+                ctx->protocol = NGX_STREAM_SOCKS_PROTOCOL_HTTPS;
+            } else {
+                ctx->protocol = NGX_STREAM_SOCKS_PROTOCOL_HTTP;
+            }
 
-            ctx->protocol = NGX_STREAM_SOCKS_PROTOCOL_HTTPS;
             if (proxy_auth_require) {
                 ngx_stream_socks_send_establish(s, NGX_STREAM_SOCKS_REPLY_REP_AUTH_REQUIRE);
                 ctx->buf->last = ctx->buf->pos;
@@ -619,9 +640,14 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
 
             ctx->dst_addr.data = ngx_pcalloc(c->pool, host_len);
             ctx->dst_addr.len = host_len;
-            ngx_memcpy(ctx->dst_addr.data, buf+8, host_len);
+            ngx_memcpy(ctx->dst_addr.data, buf+parse_start, host_len);
             ngx_int_t port;
-            port = ngx_atoi(buf+8+host_len+1, len - host_len - 1);
+
+            if (buf[parse_start+host_len] == '/') {
+                port = 80;
+            } else {
+                port = ngx_atoi(buf+parse_start+host_len+1, len - host_len - 1);
+            }
 
             if (port == NGX_ERROR) {
                 ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_REQUEST);
@@ -629,7 +655,7 @@ ngx_stream_socks_read_handler(ngx_event_t *ev)
             }
             ctx->dst_port = port;
             ngx_log_debug2(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
-                "socks receive https proxy connect addr: %V port: %d", &ctx->dst_addr, ctx->dst_port);
+                "socks receive http proxy connect addr: %V port: %d", &ctx->dst_addr, ctx->dst_port);
             ctx->state = socks_http_proxy;
             // ensure send
 
@@ -1548,11 +1574,15 @@ ngx_stream_socks_proxy_test_connect(ngx_connection_t *c)
 static void
 ngx_stream_socks_proxy_connect_handler(ngx_event_t *ev)
 {
-    ngx_connection_t      *c;
-    ngx_stream_session_t  *s;
+    ngx_connection_t         *c;
+    ngx_stream_session_t     *s;
+    ngx_stream_socks_ctx_t   *ctx;
+    ssize_t                   len;
 
     c = ev->data;
     s = c->data;
+
+    ctx = ngx_stream_get_module_ctx(s, ngx_stream_socks_module);
 
     if (ev->timedout) {
         ngx_stream_socks_send_establish(s, NGX_STREAM_SOCKS_REPLY_REP_NETWORK_UNREACHABLE);
@@ -1569,6 +1599,14 @@ ngx_stream_socks_proxy_connect_handler(ngx_event_t *ev)
     if (ngx_stream_socks_proxy_test_connect(c) != NGX_OK) {
         ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_GATEWAY);
         return;
+    }
+
+    if (ctx->protocol == NGX_STREAM_SOCKS_PROTOCOL_HTTP) {
+        len = c->send(c, ctx->buf->pos, ctx->buf->last - ctx->buf->pos);
+        if (len != ctx->buf->last - ctx->buf->pos) {
+            ngx_stream_socks_proxy_finalize(s, NGX_STREAM_BAD_GATEWAY);
+            return;
+        }
     }
 
     ngx_stream_socks_send_establish(s, NGX_STREAM_SOCKS_REPLY_REP_SUCCEED);
