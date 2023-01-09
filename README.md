@@ -1,9 +1,8 @@
 # ngx_stream_socks_module
 ## Description
-Socks5 proxy server based on nginx stream module implementation.
+Proxy server based on nginx stream module implementation. It support HTTP and Socks5(TCP) proxy.
 
 
-But this module now only support tcp proxy.
 ## Installation
 
 ```
@@ -97,11 +96,14 @@ socks auth user name in current connection
 ### `$socks_passwd`
 socks auth password in current connection
 
+### `$socks_protocol`
+proxy protocol in current connection
+
 ## Usage
 ```
 stream {
-    resolver 8.8.8.8;
-    log_format socks 'socks: $socks_connect_addr $socks_name $socks_passwd';
+    resolver 8.8.8.8 ipv6=off;
+    log_format socks 'socks: $socks_connect_addr $socks_name $socks_passwd $socks_protocol';
     server {         
         listen     0.0.0.0:22345;
         socks;
